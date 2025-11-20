@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import joblib
 import numpy as np
+from sklearn.decomposition import PCA # Added for Clustering Visualization
 
 # Set page configuration
 st.set_page_config(page_title="UK GHG Emissions Dashboard", layout="wide")
@@ -72,6 +73,15 @@ def load_model():
         return model
     except FileNotFoundError:
         st.warning("⚠️ Model file 'arima_ghg_model.pkl' not found. Please run the training notebook first.")
+        return None
+
+def load_kmeans_model():
+    """Loads the pre-trained K-Means Clustering model."""
+    try:
+        model = joblib.load('kmeans_clustering_model.pkl')
+        return model
+    except FileNotFoundError:
+        st.warning("⚠️ Model file 'kmeans_clustering_model.pkl' not found. Please run the training notebook first.")
         return None
 
 # --- 2. Main Dashboard Layout ---
@@ -365,3 +375,113 @@ elif selected_dataset == "Territorial greenhouse gas emissions by source categor
 
         else:
             st.warning("Please select at least one sector to visualize.")
+            
+        # =====================================================
+        # PART B: UNSUPERVISED LEARNING (CLUSTERING)
+        # =====================================================
+        st.markdown("---")
+        st.header("Unsupervised Learning: Sector Clustering")
+        st.info("This model uses K-Means Clustering to group economic sectors based on their historical emission **trajectories** (1990-2023).")
+        
+        kmeans_model = load_kmeans_model()
+        
+        if kmeans_model:
+            # 1. Prepare Data for Clustering
+            # CRITICAL: Must use the full dataset (not just selected sectors) to match model training
+            # CRITICAL: Must apply same Normalization (1990 = 1.0)
+            start_vals = df_sectors.iloc[:, 0].replace(0, 1e-9) 
+            df_clus_norm = df_sectors.div(start_vals, axis=0).fillna(0)
+            
+            # 2. Predict Clusters using Saved Model
+            clusters = kmeans_model.predict(df_clus_norm)
+            df_results = df_clus_norm.copy()
+            df_results['Cluster_ID'] = clusters
+            
+            # 3. Apply Smart Naming Logic
+            # Calculate mean 2023 value for each cluster to rank them
+            cluster_means = df_results.groupby('Cluster_ID').mean().iloc[:, -1] # Get 2023 column
+            sorted_clusters = cluster_means.sort_values().index.tolist()
+
+            cluster_names = {}
+            # Standard Logic for 3 clusters
+            if len(sorted_clusters) >= 3:
+                cluster_names[sorted_clusters[0]] = "Rapid Decarbonizers"
+                cluster_names[sorted_clusters[1]] = "Moderate Reducers"
+                cluster_names[sorted_clusters[2]] = "Hard-to-Abate Sectors"
+                # Handle extra clusters if K > 3
+                for i in sorted_clusters[3:]:
+                    cluster_names[i] = f"Cluster {i}"
+            else:
+                cluster_names[sorted_clusters[0]] = "Leaders"
+                cluster_names[sorted_clusters[1]] = "Laggards"
+                
+            df_results['Cluster_Name'] = df_results['Cluster_ID'].map(cluster_names)
+            
+            # 4. Visualization: Trajectories
+            st.subheader("Cluster Trajectories (Normalized)")
+            fig_c, ax_c = plt.subplots(figsize=(12, 6))
+            
+            # Use seaborn deep palette
+            unique_names = df_results['Cluster_Name'].unique()
+            colors = sns.color_palette("deep", len(unique_names))
+            
+            for i, name in enumerate(unique_names):
+                subset = df_results[df_results['Cluster_Name'] == name]
+                original_id = subset['Cluster_ID'].iloc[0]
+                
+                # Plot Centroid (Thick)
+                centroid = subset.iloc[:, :-2].mean(axis=0)
+                ax_c.plot(centroid.index, centroid.values, color=colors[i], linewidth=3, label=f'{name} (n={len(subset)})')
+                
+                # Plot Members (Thin)
+                for sector in subset.index:
+                    ax_c.plot(subset.columns[:-2], subset.loc[sector, subset.columns[:-2]], color=colors[i], alpha=0.15)
+            
+            ax_c.axhline(1.0, color='black', linestyle='--', label='Baseline')
+            ax_c.set_ylabel("Relative Emissions (1.0 = 1990)")
+            ax_c.set_xlabel("Year")
+            ax_c.legend()
+            ax_c.grid(True, alpha=0.3)
+            st.pyplot(fig_c)
+            
+            # 5. Visualization: PCA Scatter Plot
+            st.subheader("Cluster Groups (PCA Projection)")
+            
+            # Run PCA
+            pca = PCA(n_components=2)
+            pcs = pca.fit_transform(df_clus_norm)
+            df_pca = pd.DataFrame(data=pcs, columns=['PC1', 'PC2'], index=df_clus_norm.index)
+            df_pca['Group'] = df_results['Cluster_Name']
+            
+            fig_pca, ax_pca = plt.subplots(figsize=(10, 8))
+            sns.scatterplot(
+                x='PC1', y='PC2', 
+                hue='Group', 
+                data=df_pca, 
+                palette='deep', 
+                s=150, 
+                edgecolor='black',
+                ax=ax_pca
+            )
+            
+            # Add labels
+            for i in range(df_pca.shape[0]):
+                ax_pca.text(
+                    df_pca.PC1[i]+0.05, 
+                    df_pca.PC2[i], 
+                    df_pca.index[i], 
+                    fontsize=9, 
+                    alpha=0.7
+                )
+                
+            ax_pca.set_xlabel('Principal Component 1')
+            ax_pca.set_ylabel('Principal Component 2')
+            ax_pca.grid(True, alpha=0.3)
+            st.pyplot(fig_pca)
+            
+            # 6. Table of Members
+            with st.expander("View Sectors by Cluster"):
+                st.dataframe(df_results[['Cluster_Name']].sort_values('Cluster_Name'))
+                
+        else:
+            st.warning("⚠️ Clustering Model not found. Please run the training notebook first.")
