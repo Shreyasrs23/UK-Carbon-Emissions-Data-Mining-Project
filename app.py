@@ -59,12 +59,12 @@ file_path = 'final-greenhouse-gas-emissions-tables-2023.xlsx'
 
 # Dropdown Options
 dataset_options = [
-    "Territorial greenhouse gas emissions by gas, in million tonnes carbon dioxide equivalent (MtCO2e), UK"
+    "Territorial greenhouse gas emissions by gas"
 ]
 selected_dataset = st.sidebar.selectbox("Select Dataset to Analyze", dataset_options)
 
 # --- 3. Analysis Logic ---
-if selected_dataset == "Territorial greenhouse gas emissions by gas, in million tonnes carbon dioxide equivalent (MtCO2e), UK":
+if selected_dataset == "Territorial greenhouse gas emissions by gas":
     
     # Load Data
     df = load_data(file_path, '1.1')
