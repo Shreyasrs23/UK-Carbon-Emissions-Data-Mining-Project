@@ -14,46 +14,79 @@ st.set_page_config(page_title="UK GHG Emissions Dashboard", layout="wide")
 def load_data(file_path, sheet_name):
     """
     Loads and cleans the specified sheet.
-    Includes specific logic for Table 1.1, 1.2, 1.3, 1.4, and 1.5.
+    Includes specific logic for Tables 1.1 through 1.7.
     """
     try:
-        # Load data with header at row 5
-        df = pd.read_excel(file_path, sheet_name=sheet_name, header=5)
-        
         # --- LOGIC FOR TABLE 1.1 (GASES) ---
         if sheet_name in ['1.1', 'Table 1.1']:
-            # Rename first column to 'Gas' and set as index
+            df = pd.read_excel(file_path, sheet_name=sheet_name, header=5)
             df.rename(columns={df.columns[0]: 'Gas'}, inplace=True)
             df.set_index('Gas', inplace=True)
-            
-            # Fix Year Columns
             df.columns = pd.to_numeric(df.columns, errors='coerce')
             df = df.dropna(axis=1, how='all')
             df.columns = df.columns.astype(int)
             df.dropna(how='all', inplace=True)
             return df
 
-        # --- LOGIC FOR TABLE 1.2, 1.3, 1.4, 1.5 (SECTORS) ---
-        # Extended to include 1.4 (Methane) and 1.5 (N2O) which share the structure
-        elif sheet_name in ['1.2', 'Table 1.2', '1.3', 'Table 1.3', '1.4', 'Table 1.4', '1.5', 'Table 1.5']:
-            # Clean column names (remove whitespace)
+        # --- LOGIC FOR TABLE 1.6 (F-GASES - Header Row 6) ---
+        elif sheet_name in ['1.6', 'Table 1.6']:
+            df = pd.read_excel(file_path, sheet_name=sheet_name, header=6)
             df.columns = [c if isinstance(c, int) else str(c).strip() for c in df.columns]
             
-            # Filter for Main Sectors (rows ending in ' total' but not 'Grand total')
             if 'TES sector' in df.columns:
                 mask = (df['TES sector'].str.endswith(' total', na=False)) & \
                        (df['TES sector'] != 'Grand total')
                 df = df[mask].copy()
-                
-                # Clean Index Names (remove ' total')
                 df['TES sector'] = df['TES sector'].str.replace(' total', '')
                 df.set_index('TES sector', inplace=True)
                 
-                # Fix Year Columns (Keep only numeric)
                 year_cols = [c for c in df.columns if str(c).replace('.','').isdigit()]
                 df = df[year_cols]
+                df.columns = pd.to_numeric(df.columns).astype(int)
+                df = df.apply(pd.to_numeric, errors='coerce')
+                return df
+            else:
+                st.error(f"Column 'TES sector' not found in {sheet_name}")
+                return None
+
+        # --- LOGIC FOR TABLE 1.7 (FUEL TYPE - Header Row 4) ---
+        elif sheet_name in ['1.7', 'Table 1.7']:
+            df = pd.read_excel(file_path, sheet_name=sheet_name, header=4)
+            df.columns = [c if isinstance(c, int) else str(c).strip() for c in df.columns]
+            
+            # Handle column naming variation
+            if 'Fuel group' not in df.columns:
+                # Fallback: Rename first column if it looks right
+                df.rename(columns={df.columns[0]: 'Fuel group'}, inplace=True)
+            
+            # Group by Fuel Group and sum
+            year_cols = [c for c in df.columns if str(c).replace('.','').isdigit()]
+            # We must sum because Table 1.7 has multiple rows per Fuel Group
+            df_agg = df.groupby('Fuel group')[year_cols].sum()
+            
+            # Fix Columns
+            df_agg.columns = df_agg.columns.astype(int)
+            
+            # Remove totals
+            if 'Grand total' in df_agg.index: df_agg = df_agg.drop('Grand total')
+            if 'Total' in df_agg.index: df_agg = df_agg.drop('Total')
+            
+            return df_agg
+
+        # --- LOGIC FOR SECTOR TABLES (1.2, 1.3, 1.4, 1.5 - Header Row 5) ---
+        elif sheet_name in ['1.2', 'Table 1.2', '1.3', 'Table 1.3', '1.4', 'Table 1.4', '1.5', 'Table 1.5']:
+            df = pd.read_excel(file_path, sheet_name=sheet_name, header=5)
+            df.columns = [c if isinstance(c, int) else str(c).strip() for c in df.columns]
+            
+            if 'TES sector' in df.columns:
+                mask = (df['TES sector'].str.endswith(' total', na=False)) & \
+                       (df['TES sector'] != 'Grand total')
+                df = df[mask].copy()
+                df['TES sector'] = df['TES sector'].str.replace(' total', '')
+                df.set_index('TES sector', inplace=True)
                 
-                # Force headers to int and values to numeric
+                year_cols = [c for c in df.columns if str(c).replace('.','').isdigit()]
+                df = df[year_cols]
                 df.columns = pd.to_numeric(df.columns).astype(int)
                 df = df.apply(pd.to_numeric, errors='coerce')
                 return df
@@ -68,21 +101,21 @@ def load_data(file_path, sheet_name):
         return None
 
 def load_model():
-    """Loads the pre-trained ARIMA model."""
     try:
-        model = joblib.load('arima_ghg_model.pkl')
-        return model
+        return joblib.load('arima_ghg_model.pkl')
     except FileNotFoundError:
-        st.warning("⚠️ Model file 'arima_ghg_model.pkl' not found. Please run the training notebook first.")
         return None
 
 def load_kmeans_model():
-    """Loads the pre-trained K-Means Clustering model."""
     try:
-        model = joblib.load('kmeans_clustering_model.pkl')
-        return model
+        return joblib.load('kmeans_clustering_model.pkl')
     except FileNotFoundError:
-        st.warning("⚠️ Model file 'kmeans_clustering_model.pkl' not found. Please run the training notebook first.")
+        return None
+
+def load_rf_model():
+    try:
+        return joblib.load('fuel_classification_model.pkl')
+    except FileNotFoundError:
         return None
 
 # --- 2. Main Dashboard Layout ---
@@ -99,7 +132,9 @@ dataset_options = [
     "Territorial greenhouse gas emissions by source category",
     "Territorial emissions of carbon dioxide (CO2) by source category",
     "Territorial emissions of methane (CH4) by source category",
-    "Territorial emissions of nitrous oxide (N2O) by source category"
+    "Territorial emissions of nitrous oxide (N2O) by source category",
+    "Territorial emissions of fluorinated gases (F gases) by source category",
+    "Territorial greenhouse gas emissions by type of fuel"
 ]
 selected_dataset = st.sidebar.selectbox("Select Dataset to Analyze", dataset_options)
 
@@ -108,52 +143,27 @@ selected_dataset = st.sidebar.selectbox("Select Dataset to Analyze", dataset_opt
 # ==============================================================================
 if selected_dataset == "Territorial greenhouse gas emissions by gas":
     
-    # Load Data
     df = load_data(file_path, '1.1')
     
     if df is not None:
-        # Separate Total from Components
         total_row = df.loc['Total greenhouse gas emissions']
         components = df.drop('Total greenhouse gas emissions')
-        
-        # Transpose for Time Series Analysis
         df_ts = components.T
         df_total_ts = total_row.T
         
-        # --- SIDEBAR CONTROLS ---
         st.sidebar.subheader("Filter Options (Descriptive)")
+        min_year, max_year = int(df_ts.index.min()), int(df_ts.index.max())
+        start_year, end_year = st.sidebar.slider("Historical Year Range", min_year, max_year, (min_year, max_year))
+        selected_gases = st.sidebar.multiselect("Select Gases", df_ts.columns.tolist(), default=df_ts.columns.tolist())
         
-        # 1. Year Range Slider
-        min_year = int(df_ts.index.min())
-        max_year = int(df_ts.index.max())
-        start_year, end_year = st.sidebar.slider(
-            "Select Historical Year Range", 
-            min_value=min_year, 
-            max_value=max_year, 
-            value=(min_year, max_year)
-        )
-        
-        # 2. Gas Selector
-        all_gases = df_ts.columns.tolist()
-        selected_gases = st.sidebar.multiselect(
-            "Select Gases to Display", 
-            all_gases, 
-            default=all_gases
-        )
-
-        # 3. Forecast Slider
         st.sidebar.markdown("---")
         st.sidebar.subheader("Forecast Settings")
         forecast_years = st.sidebar.slider("Forecast Horizon (Years)", 1, 30, 10)
         
-        # Apply Filters
         df_ts_filtered = df_ts.loc[start_year:end_year, selected_gases]
         df_total_filtered = df_total_ts.loc[start_year:end_year]
         
-        # --- PART A: DESCRIPTIVE ANALYSIS ---
         st.header("Descriptive Analysis")
-        
-        # Row 1: Headline Trend
         st.subheader(f"1. Total Emissions Trend ({start_year}-{end_year})")
         fig1, ax1 = plt.subplots(figsize=(10, 4))
         ax1.plot(df_total_filtered.index, df_total_filtered.values, color='#1f77b4', linewidth=3, label='Total Emissions')
@@ -164,245 +174,139 @@ if selected_dataset == "Territorial greenhouse gas emissions by gas":
         ax1.grid(True, alpha=0.3)
         st.pyplot(fig1)
 
-        # Row 2: Composition and Normalized Trends
         col1, col2 = st.columns(2)
-        
         with col1:
-            st.subheader("2. Composition by Gas (Stacked)")
+            st.subheader("2. Composition by Gas")
             fig2, ax2 = plt.subplots(figsize=(6, 4))
             ax2.stackplot(df_ts_filtered.index, df_ts_filtered.T.values, labels=df_ts_filtered.columns, alpha=0.8)
-            ax2.set_ylabel('Emissions (MtCO2e)')
             ax2.legend(loc='upper left', fontsize='small')
             st.pyplot(fig2)
-            
         with col2:
             st.subheader("3. Relative Change (Index 1990=100)")
             if not df_ts_filtered.empty:
                 df_normalized = df_ts_filtered.div(df_ts_filtered.iloc[0]) * 100
                 fig3, ax3 = plt.subplots(figsize=(6, 4))
                 for column in df_normalized.columns:
-                    ax3.plot(df_normalized.index, df_normalized[column], linewidth=2, label=column)
-                ax3.axhline(100, color='black', linestyle='--', linewidth=1, alpha=0.5)
-                ax3.set_ylabel('Percent of Start Year')
+                    ax3.plot(df_normalized.index, df_normalized[column], label=column)
+                ax3.axhline(100, color='black', linestyle='--')
                 st.pyplot(fig3)
-            else:
-                st.warning("No data to display for normalized chart.")
 
-        # Row 3: Snapshot Comparison (Donut Charts)
         st.subheader(f"4. Gas Share Comparison: {start_year} vs {end_year}")
         fig4, axes = plt.subplots(1, 2, figsize=(10, 5))
-        
-        # Start Year Donut
         if start_year in components.columns:
             axes[0].pie(components.loc[selected_gases, start_year], labels=None, startangle=90, autopct='%1.1f%%', pctdistance=0.85)
             axes[0].set_title(f'{start_year} Share')
             axes[0].add_artist(plt.Circle((0,0),0.70,fc='white'))
-        
-        # End Year Donut
         if end_year in components.columns:
             axes[1].pie(components.loc[selected_gases, end_year], labels=None, startangle=90, autopct='%1.1f%%', pctdistance=0.85)
             axes[1].set_title(f'{end_year} Share')
             axes[1].add_artist(plt.Circle((0,0),0.70,fc='white'))
-        
-        # Common Legend
         axes[1].legend(selected_gases, loc='center left', bbox_to_anchor=(1, 0.5))
         st.pyplot(fig4)
 
-        # Row 4: Waterfall/Bar of Absolute Change
         st.subheader(f"5. Absolute Reduction by Gas ({start_year} to {end_year})")
-        if start_year in components.columns and end_year in components.columns:
-            change = components.loc[selected_gases, end_year] - components.loc[selected_gases, start_year]
-            colors = ['green' if x < 0 else 'red' for x in change]
-            
-            fig5, ax5 = plt.subplots(figsize=(10, 5))
-            change.sort_values().plot(kind='bar', color=colors, ax=ax5)
-            ax5.axhline(0, color='black', linewidth=1)
-            ax5.set_ylabel('Change (MtCO2e)')
-            ax5.grid(axis='y', linestyle='--', alpha=0.5)
-            st.pyplot(fig5)
+        change = components.loc[selected_gases, end_year] - components.loc[selected_gases, start_year]
+        colors = ['green' if x < 0 else 'red' for x in change]
+        fig5, ax5 = plt.subplots(figsize=(10, 5))
+        change.sort_values().plot(kind='bar', color=colors, ax=ax5)
+        ax5.axhline(0, color='black')
+        st.pyplot(fig5)
 
-        # --- PART B: PREDICTIVE FORECASTING ---
         st.markdown("---")
         st.header("Predictive Forecasting (ARIMA)")
-        st.info(f"Forecasting Total GHG Emissions for the next {forecast_years} years based on historical trends.")
-
         model = load_model()
-        
-        if model is not None:
-            # Prepare Data
-            last_hist_year = df_total_ts.index.max()
-            future_year_end = last_hist_year + forecast_years
+        if model:
+            last_hist = df_total_ts.index.max()
+            future_end = last_hist + forecast_years
+            fc_res = model.get_forecast(steps=forecast_years)
+            fc_df = pd.DataFrame({
+                'Forecast': fc_res.predicted_mean.values,
+                'Lower': fc_res.conf_int().iloc[:, 0].values,
+                'Upper': fc_res.conf_int().iloc[:, 1].values
+            }, index=range(last_hist+1, future_end+1))
             
-            # Forecast
-            forecast_result = model.get_forecast(steps=forecast_years)
-            forecast_values = forecast_result.predicted_mean
-            conf_int = forecast_result.conf_int()
-            
-            # Future Index
-            future_index = range(last_hist_year + 1, future_year_end + 1)
-            forecast_df = pd.DataFrame({
-                'Year': future_index,
-                'Forecast': forecast_values.values,
-                'Lower CI': conf_int.iloc[:, 0].values,
-                'Upper CI': conf_int.iloc[:, 1].values
-            }).set_index('Year')
-            
-            # Visualization
-            fig_pred, ax_pred = plt.subplots(figsize=(12, 6))
-            ax_pred.plot(df_total_ts.index, df_total_ts.values, label='Historical Data', color='black', linewidth=2)
-            ax_pred.plot(forecast_df.index, forecast_df['Forecast'], label='Forecast', color='red', linestyle='--', linewidth=2)
-            ax_pred.fill_between(forecast_df.index, forecast_df['Lower CI'], forecast_df['Upper CI'], color='pink', alpha=0.4, label='95% Confidence Interval')
-            
-            if future_year_end >= 2050:
-                ax_pred.axhline(0, color='green', linestyle=':', linewidth=2, label='Net Zero Target')
-            
-            ax_pred.set_xlabel("Year")
-            ax_pred.set_ylabel("Emissions (MtCO2e)")
-            ax_pred.set_title(f"UK Greenhouse Gas Emissions Trajectory (Forecast to {future_year_end})")
-            ax_pred.legend()
-            ax_pred.grid(True, alpha=0.3)
-            st.pyplot(fig_pred)
-            
-            with st.expander("View Detailed Forecast Data"):
-                st.dataframe(forecast_df.style.format("{:.2f}"))
+            fig_p, ax_p = plt.subplots(figsize=(12, 6))
+            ax_p.plot(df_total_ts.index, df_total_ts.values, label='History', color='black')
+            ax_p.plot(fc_df.index, fc_df['Forecast'], label='Forecast', color='red', linestyle='--')
+            ax_p.fill_between(fc_df.index, fc_df['Lower'], fc_df['Upper'], color='pink', alpha=0.4)
+            if future_end >= 2050: ax_p.axhline(0, color='green', linestyle=':', label='Net Zero Target')
+            ax_p.legend()
+            ax_p.set_title(f"Forecast to {future_end}")
+            st.pyplot(fig_p)
+            with st.expander("View Data"): st.dataframe(fc_df.style.format("{:.2f}"))
+        else:
+            st.warning("Model not found.")
 
 # ==============================================================================
 # OPTION 2: TABLE 1.2 (SECTORS + CLUSTERING)
 # ==============================================================================
 elif selected_dataset == "Territorial greenhouse gas emissions by source category":
     
-    # Load Data (Using updated load_data that handles 1.2)
     df_sectors = load_data(file_path, '1.2')
     
     if df_sectors is not None:
-        # Transpose for Time Series Analysis (Rows = Years, Cols = Sectors)
         df_ts = df_sectors.T
         
-        # --- SIDEBAR CONTROLS ---
-        st.sidebar.subheader("Sector Filter Options")
+        st.sidebar.subheader("Sector Options")
+        min_y, max_y = int(df_ts.index.min()), int(df_ts.index.max())
+        start_year, end_year = st.sidebar.slider("Year Range", min_y, max_y, (min_y, max_y))
+        all_secs = df_ts.columns.tolist()
+        top_5 = df_ts.loc[max_y].sort_values(ascending=False).head(5).index.tolist()
+        selected_sectors = st.sidebar.multiselect("Select Sectors", all_secs, default=top_5)
         
-        # 1. Year Range Slider
-        min_year = int(df_ts.index.min())
-        max_year = int(df_ts.index.max())
-        start_year, end_year = st.sidebar.slider(
-            "Select Year Range", 
-            min_value=min_year, 
-            max_value=max_year, 
-            value=(min_year, max_year)
-        )
+        df_filt = df_ts.loc[start_year:end_year, selected_sectors]
         
-        # 2. Sector Multiselect
-        all_sectors = df_ts.columns.tolist()
-        # Default to Top 5
-        top_5_sectors = df_ts.loc[max_year].sort_values(ascending=False).head(5).index.tolist()
-        selected_sectors = st.sidebar.multiselect(
-            "Select Sectors to Compare", 
-            all_sectors, 
-            default=top_5_sectors
-        )
-        
-        # Apply Filters
-        df_filtered = df_ts.loc[start_year:end_year, selected_sectors]
-        
-        # --- VISUALIZATIONS ---
         st.header(f"Sectoral Emissions Analysis ({start_year}-{end_year})")
-
-        if not df_filtered.empty:
-            
-            # VISUALIZATION 1: Multi-Line Trend
-            st.subheader("1. Emission Trends by Sector")
-            st.markdown("Compare the absolute emissions trajectories of different sectors.")
-            
+        
+        if not df_filt.empty:
+            st.subheader("1. Emission Trends")
             fig1, ax1 = plt.subplots(figsize=(10, 5))
-            for sector in df_filtered.columns:
-                ax1.plot(df_filtered.index, df_filtered[sector], marker='o', markersize=3, label=sector)
-            
-            ax1.set_ylabel("Emissions (MtCO2e)")
-            ax1.set_xlabel("Year")
+            for s in df_filt.columns:
+                ax1.plot(df_filt.index, df_filt[s], marker='o', markersize=3, label=s)
             ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
             ax1.grid(True, alpha=0.3)
             st.pyplot(fig1)
             
-            # VISUALIZATION 2: Stacked Area Chart
-            st.subheader("2. Total Emissions Composition")
-            st.markdown("How much does each sector contribute to the total pool over time?")
-            
+            st.subheader("2. Composition")
             fig2, ax2 = plt.subplots(figsize=(10, 5))
-            ax2.stackplot(df_filtered.index, df_filtered.T.values, labels=df_filtered.columns, alpha=0.8)
-            ax2.set_ylabel("Emissions (MtCO2e)")
-            ax2.set_xlabel("Year")
+            ax2.stackplot(df_filt.index, df_filt.T.values, labels=df_filt.columns, alpha=0.8)
             ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
             st.pyplot(fig2)
             
             col1, col2 = st.columns(2)
-            
-            # VISUALIZATION 3: Normalized Trends
             with col1:
-                st.subheader("3. Relative Change (Index: Start Year = 100)")
-                st.markdown("Compare *speed* of reduction/growth, ignoring size differences.")
-                
-                # Normalize to the first selected year
-                df_norm = df_filtered.div(df_filtered.iloc[0], axis=1) * 100
-                
+                st.subheader("3. Relative Change (Start=100)")
+                df_norm = df_filt.div(df_filt.iloc[0], axis=1) * 100
                 fig3, ax3 = plt.subplots(figsize=(6, 5))
-                for sector in df_norm.columns:
-                    ax3.plot(df_norm.index, df_norm[sector], linewidth=2, label=sector)
-                
-                ax3.axhline(100, color='black', linestyle='--', alpha=0.5)
-                ax3.set_ylabel(f"% of {start_year} Emissions")
+                for s in df_norm.columns: ax3.plot(df_norm.index, df_norm[s], label=s)
+                ax3.axhline(100, color='black', linestyle='--')
                 st.pyplot(fig3)
-
-            # VISUALIZATION 4: Snapshot Bar Chart
             with col2:
                 st.subheader(f"4. Top Emitters in {end_year}")
-                st.markdown(f"Snapshot of emissions in the final selected year.")
-                
-                # Sort by value
-                snapshot = df_filtered.loc[end_year].sort_values(ascending=True)
-                
+                snap = df_filt.loc[end_year].sort_values()
                 fig4, ax4 = plt.subplots(figsize=(6, 5))
-                snapshot.plot(kind='barh', color='teal', ax=ax4)
-                ax4.set_xlabel("MtCO2e")
-                ax4.grid(axis='x', alpha=0.3)
+                snap.plot(kind='barh', color='teal', ax=ax4)
                 st.pyplot(fig4)
 
-            # VISUALIZATION 5: Heatmap
             st.subheader("5. Emission Intensity Heatmap")
-            st.markdown("A bird's-eye view of emission intensity. Darker colors = Higher emissions.")
-            
             fig5, ax5 = plt.subplots(figsize=(12, 6))
-            # Transpose back so Years are X-axis, Sectors are Y-axis
-            sns.heatmap(df_filtered.T, cmap="YlOrRd", linewidths=.5, ax=ax5, cbar_kws={'label': 'MtCO2e'})
-            ax5.set_xlabel("Year")
-            ax5.set_ylabel("Sector")
+            sns.heatmap(df_filt.T, cmap="YlOrRd", linewidths=.5, ax=ax5)
             st.pyplot(fig5)
-
         else:
-            st.warning("Please select at least one sector to visualize.")
-            
-        # =====================================================
-        # PART B: UNSUPERVISED LEARNING (CLUSTERING)
-        # =====================================================
+            st.warning("Select at least one sector.")
+
         st.markdown("---")
         st.header("Unsupervised Learning: Sector Clustering")
-        st.info("This model uses K-Means Clustering to group economic sectors based on their historical emission **trajectories** (1990-2023).")
-        
         kmeans_model = load_kmeans_model()
-        
         if kmeans_model:
-            # 1. Prepare Data for Clustering
             start_vals = df_sectors.iloc[:, 0].replace(0, 1e-9) 
             df_clus_norm = df_sectors.div(start_vals, axis=0).fillna(0)
-            
-            # 2. Predict Clusters
             clusters = kmeans_model.predict(df_clus_norm)
             df_results = df_clus_norm.copy()
             df_results['Cluster_ID'] = clusters
             
-            # 3. Smart Naming
             cluster_means = df_results.groupby('Cluster_ID').mean().iloc[:, -1]
             sorted_clusters = cluster_means.sort_values().index.tolist()
-
             cluster_names = {}
             if len(sorted_clusters) >= 3:
                 cluster_names[sorted_clusters[0]] = "Rapid Decarbonizers"
@@ -412,283 +316,271 @@ elif selected_dataset == "Territorial greenhouse gas emissions by source categor
             else:
                 cluster_names[sorted_clusters[0]] = "Leaders"
                 cluster_names[sorted_clusters[1]] = "Laggards"
-                
             df_results['Cluster_Name'] = df_results['Cluster_ID'].map(cluster_names)
             
-            # 4. Visualization: Trajectories
-            st.subheader("Cluster Trajectories (Normalized)")
+            st.subheader("Cluster Trajectories")
             fig_c, ax_c = plt.subplots(figsize=(12, 6))
+            colors = sns.color_palette("deep", len(sorted_clusters))
             unique_names = df_results['Cluster_Name'].unique()
-            colors = sns.color_palette("deep", len(unique_names))
-            
             for i, name in enumerate(unique_names):
                 subset = df_results[df_results['Cluster_Name'] == name]
-                orig_id = subset['Cluster_ID'].iloc[0]
                 centroid = subset.iloc[:, :-2].mean(axis=0)
-                ax_c.plot(centroid.index, centroid.values, color=colors[i], linewidth=3, label=f'{name} (n={len(subset)})')
+                ax_c.plot(centroid.index, centroid.values, color=colors[i], linewidth=3, label=name)
                 for sec in subset.index:
-                    ax_c.plot(subset.columns[:-2], subset.loc[sec, subset.columns[:-2]], color=colors[i], alpha=0.15)
-            
-            ax_c.axhline(1.0, color='black', linestyle='--', label='Baseline')
-            ax_c.set_ylabel("Relative Emissions (1.0 = 1990)")
-            ax_c.set_xlabel("Year")
+                    ax_c.plot(subset.columns[:-2], subset.loc[sec, subset.columns[:-2]], color=colors[i], alpha=0.1)
+            ax_c.axhline(1.0, color='black', linestyle='--')
             ax_c.legend()
-            ax_c.grid(True, alpha=0.3)
             st.pyplot(fig_c)
             
-            # 5. Visualization: PCA Scatter
-            st.subheader("Cluster Groups (PCA Projection)")
+            st.subheader("Cluster Groups (PCA)")
             pca = PCA(n_components=2)
             pcs = pca.fit_transform(df_clus_norm)
             df_pca = pd.DataFrame(data=pcs, columns=['PC1', 'PC2'], index=df_clus_norm.index)
             df_pca['Group'] = df_results['Cluster_Name']
-            
             fig_pca, ax_pca = plt.subplots(figsize=(10, 8))
-            sns.scatterplot(x='PC1', y='PC2', hue='Group', data=df_pca, palette='deep', s=100, edgecolor='black', ax=ax_pca)
+            sns.scatterplot(x='PC1', y='PC2', hue='Group', data=df_pca, palette='deep', s=100, ax=ax_pca)
             for i in range(df_pca.shape[0]):
                 ax_pca.text(df_pca.PC1[i]+0.05, df_pca.PC2[i], df_pca.index[i], fontsize=8, alpha=0.7)
             st.pyplot(fig_pca)
-            
-            with st.expander("View Sectors by Cluster"):
-                st.dataframe(df_results[['Cluster_Name']].sort_values('Cluster_Name'))
+            with st.expander("View Clusters"): st.dataframe(df_results[['Cluster_Name']].sort_values('Cluster_Name'))
         else:
-            st.warning("⚠️ Clustering Model not found.")
+            st.warning("Clustering Model not found.")
 
 # ==============================================================================
-# OPTION 3: TABLE 1.3 (CO2 BY SECTOR)
+# OPTION 3, 4, 5, 6: SECTOR TABLES (CO2, CH4, N2O, F-GASES)
 # ==============================================================================
-elif selected_dataset == "Territorial emissions of carbon dioxide (CO2) by source category":
+elif selected_dataset in [
+    "Territorial emissions of carbon dioxide (CO2) by source category",
+    "Territorial emissions of methane (CH4) by source category",
+    "Territorial emissions of nitrous oxide (N2O) by source category",
+    "Territorial emissions of fluorinated gases (F gases) by source category"
+]:
+    # Map selection to table ID
+    table_map = {
+        "Territorial emissions of carbon dioxide (CO2) by source category": '1.3',
+        "Territorial emissions of methane (CH4) by source category": '1.4',
+        "Territorial emissions of nitrous oxide (N2O) by source category": '1.5',
+        "Territorial emissions of fluorinated gases (F gases) by source category": '1.6'
+    }
     
-    # Load Data (Table 1.3)
-    df_co2 = load_data(file_path, '1.3')
+    # Set color palettes based on gas type
+    color_map = {
+        '1.3': 'Reds',
+        '1.4': 'Greens',
+        '1.5': 'Purples',
+        '1.6': 'Blues'
+    }
     
-    if df_co2 is not None:
-        # Transpose
-        df_ts = df_co2.T
+    sheet_id = table_map[selected_dataset]
+    df_gas = load_data(file_path, sheet_id)
+    
+    if df_gas is not None:
+        df_ts = df_gas.T
         
-        # --- SIDEBAR CONTROLS ---
-        st.sidebar.subheader("CO2 Sector Filters")
+        st.sidebar.subheader("Filter Options")
+        # Rename to min_year and max_year to allow usage in top_5 calculation
+        min_year, max_year = int(df_ts.index.min()), int(df_ts.index.max())
+        start_year, end_year = st.sidebar.slider("Year Range", min_year, max_year, (min_year, max_year))
         
-        # 1. Year Range Slider
-        min_year = int(df_ts.index.min())
-        max_year = int(df_ts.index.max())
-        start_year, end_year = st.sidebar.slider(
-            "Select Year Range", 
-            min_value=min_year, 
-            max_value=max_year, 
-            value=(min_year, max_year)
-        )
-        
-        # 2. Sector Multiselect
         all_sectors = df_ts.columns.tolist()
-        top_5_sectors = df_ts.loc[max_year].sort_values(ascending=False).head(5).index.tolist()
-        selected_sectors = st.sidebar.multiselect(
-            "Select Sectors to Compare", 
-            all_sectors, 
-            default=top_5_sectors
-        )
+        # Filter active sectors (non-zero sum) to reduce clutter
+        active_sectors = df_ts.columns[df_ts.sum() > 0].tolist()
         
-        # Apply Filters
-        df_filtered = df_ts.loc[start_year:end_year, selected_sectors]
+        # Dynamic top 5 logic
+        if not active_sectors:
+            st.warning("No active sectors found for this dataset.")
+            selected_sectors = []
+        else:
+            # Use max_year defined above
+            top_5 = df_ts.loc[max_year].sort_values(ascending=False).head(5).index.tolist()
+            # If top_5 is empty (all zeros), fallback to top_5 from sum
+            if not top_5:
+                top_5 = df_ts.sum().sort_values(ascending=False).head(5).index.tolist()
+            
+            # --- CRITICAL FIX FOR STREAMLIT API EXCEPTION ---
+            # Ensure default 'top_5' only contains values present in 'active_sectors' options
+            default_selection = [s for s in top_5 if s in active_sectors]
+            
+            selected_sectors = st.sidebar.multiselect("Select Sectors", active_sectors, default=default_selection)
         
-        # --- VISUALIZATIONS ---
-        st.header(f"CO2 Emissions Analysis ({start_year}-{end_year})")
+        if selected_sectors:
+            df_filtered = df_ts.loc[start_year:end_year, selected_sectors]
+            
+            gas_name = selected_dataset.split(' of ')[1].split(' by ')[0]
+            st.header(f"{gas_name} Analysis ({start_year}-{end_year})")
+            
+            if not df_filtered.empty:
+                # Vis 1: Trend
+                st.subheader("1. Emission Trends")
+                fig1, ax1 = plt.subplots(figsize=(10, 5))
+                for s in df_filtered.columns:
+                    ax1.plot(df_filtered.index, df_filtered[s], marker='o', markersize=3, label=s)
+                ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+                ax1.grid(True, alpha=0.3)
+                st.pyplot(fig1)
+                
+                # Vis 2: Stacked Area
+                st.subheader("2. Composition")
+                fig2, ax2 = plt.subplots(figsize=(10, 5))
+                ax2.stackplot(df_filtered.index, df_filtered.T.values, labels=df_filtered.columns, alpha=0.8)
+                ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+                st.pyplot(fig2)
+                
+                col1, col2 = st.columns(2)
+                
+                # Vis 3: Snapshot
+                with col1:
+                    st.subheader(f"3. Top Emitters in {end_year}")
+                    snap = df_filtered.loc[end_year].sort_values()
+                    snap = snap[snap > 0]
+                    if not snap.empty:
+                        fig3, ax3 = plt.subplots(figsize=(6, 5))
+                        snap.plot(kind='barh', ax=ax3)
+                        st.pyplot(fig3)
+                    else:
+                        st.info("No emissions in selected year.")
+                    
+                # Vis 4: Diverging Change
+                with col2:
+                    st.subheader("4. Absolute Change")
+                    change = df_filtered.loc[end_year] - df_filtered.loc[start_year]
+                    change = change.sort_values()
+                    cols = ['green' if x < 0 else 'red' for x in change.values]
+                    fig4, ax4 = plt.subplots(figsize=(6, 5))
+                    ax4.barh(change.index, change.values, color=cols)
+                    ax4.axvline(0, color='black')
+                    st.pyplot(fig4)
+                    
+                # Vis 5: Heatmap
+                st.subheader("5. Intensity Heatmap")
+                fig5, ax5 = plt.subplots(figsize=(12, 6))
+                sns.heatmap(df_filtered.T, cmap=color_map[sheet_id], linewidths=.5, ax=ax5)
+                st.pyplot(fig5)
+            else:
+                st.warning("Select at least one sector.")
+        else:
+            st.warning("No sectors selected.")
 
+# ==============================================================================
+# OPTION 7: TABLE 1.7 (FUEL TYPE + CLASSIFICATION)
+# ==============================================================================
+elif selected_dataset == "Territorial greenhouse gas emissions by type of fuel":
+    
+    df_fuel = load_data(file_path, '1.7')
+    
+    if df_fuel is not None:
+        df_ts = df_fuel.T
+        
+        st.sidebar.subheader("Fuel Filters")
+        min_y, max_y = int(df_ts.index.min()), int(df_ts.index.max())
+        start_year, end_year = st.sidebar.slider("Year Range", min_y, max_y, (min_y, max_y))
+        
+        all_fuels = df_ts.columns.tolist()
+        # Pre-select main fuels for better default view
+        defaults = [f for f in all_fuels if any(x in f for x in ['Coal', 'Gas', 'Petroleum'])]
+        if not defaults: defaults = all_fuels[:5]
+        
+        selected_fuels = st.sidebar.multiselect("Select Fuels", all_fuels, default=defaults)
+        
+        df_filtered = df_ts.loc[start_year:end_year, selected_fuels]
+        
+        st.header(f"Emissions by Fuel Type Analysis ({start_year}-{end_year})")
+        
         if not df_filtered.empty:
             
-            # 1. Trends Line Chart
-            st.subheader("1. CO2 Emission Trends")
+            # Vis 1: The Energy Transition Line Chart
+            st.subheader("1. The Energy Transition (Trends)")
             fig1, ax1 = plt.subplots(figsize=(10, 5))
-            for sector in df_filtered.columns:
-                ax1.plot(df_filtered.index, df_filtered[sector], marker='o', markersize=3, label=sector)
-            ax1.set_ylabel("CO2 (MtCO2)")
-            ax1.set_xlabel("Year")
+            for f in df_filtered.columns:
+                lw = 3 if any(x in f for x in ['Coal', 'Petroleum', 'Gas']) else 1.5
+                alpha = 1.0 if lw==3 else 0.6
+                ax1.plot(df_filtered.index, df_filtered[f], label=f, linewidth=lw, alpha=alpha)
             ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
             ax1.grid(True, alpha=0.3)
             st.pyplot(fig1)
             
-            # 2. Stacked Area
-            st.subheader("2. CO2 Composition")
+            # Vis 2: Market Share (Stacked Area 100%)
+            st.subheader("2. Fuel Share of Total Emissions (%)")
+            row_sums = df_filtered.sum(axis=1).replace(0, np.nan)
+            df_pct = df_filtered.div(row_sums, axis=0) * 100
+            
             fig2, ax2 = plt.subplots(figsize=(10, 5))
-            ax2.stackplot(df_filtered.index, df_filtered.T.values, labels=df_filtered.columns, alpha=0.8)
-            ax2.set_ylabel("CO2 (MtCO2)")
+            ax2.stackplot(df_pct.index, df_pct.T.values, labels=df_pct.columns, alpha=0.85, cmap='inferno')
+            ax2.set_ylabel("Percentage Share")
             ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
             st.pyplot(fig2)
             
             col1, col2 = st.columns(2)
             
-            # 3. Snapshot Bar Chart
+            # Vis 3: Diverging Bar
             with col1:
-                st.subheader(f"3. Top CO2 Emitters in {end_year}")
-                snapshot = df_filtered.loc[end_year].sort_values()
-                fig3, ax3 = plt.subplots(figsize=(6, 5))
-                snapshot.plot(kind='barh', color='#4c72b0', ax=ax3)
-                ax3.set_xlabel("MtCO2")
-                st.pyplot(fig3)
-
-            # 4. Diverging Bar Chart (Change)
-            with col2:
-                st.subheader(f"4. Absolute Change ({start_year} vs {end_year})")
+                st.subheader(f"3. Change in Fuel Emissions")
                 change = df_filtered.loc[end_year] - df_filtered.loc[start_year]
                 change = change.sort_values()
-                colors = ['#2ca02c' if x < 0 else '#d62728' for x in change.values]
-                
-                fig4, ax4 = plt.subplots(figsize=(6, 5))
-                ax4.barh(change.index, change.values, color=colors)
-                ax4.axvline(0, color='black', linewidth=1)
-                ax4.set_xlabel("Change in MtCO2")
-                st.pyplot(fig4)
-
-            # 5. Heatmap
-            st.subheader("5. CO2 Intensity Heatmap")
-            fig5, ax5 = plt.subplots(figsize=(12, 6))
-            sns.heatmap(df_filtered.T, cmap="Reds", linewidths=.5, ax=ax5, cbar_kws={'label': 'MtCO2'})
-            ax5.set_xlabel("Year")
-            ax5.set_ylabel("Sector")
-            st.pyplot(fig5)
-
-        else:
-            st.warning("Please select at least one sector to visualize.")
-
-# ==============================================================================
-# OPTION 4: TABLE 1.4 (METHANE CH4)
-# ==============================================================================
-elif selected_dataset == "Territorial emissions of methane (CH4) by source category":
-    
-    df_ch4 = load_data(file_path, '1.4')
-    
-    if df_ch4 is not None:
-        df_ts = df_ch4.T
-        
-        # Filters
-        st.sidebar.subheader("Methane (CH4) Filters")
-        min_year, max_year = int(df_ts.index.min()), int(df_ts.index.max())
-        start_year, end_year = st.sidebar.slider("Year Range", min_year, max_year, (min_year, max_year))
-        
-        all_sectors = df_ts.columns.tolist()
-        # Default to top 4 for Methane as fewer sectors dominate
-        top_4 = df_ts.loc[max_year].sort_values(ascending=False).head(4).index.tolist()
-        selected_sectors = st.sidebar.multiselect("Select Sectors", all_sectors, default=top_4)
-        
-        df_filtered = df_ts.loc[start_year:end_year, selected_sectors]
-        
-        st.header(f"Methane (CH4) Emissions Analysis ({start_year}-{end_year})")
-        
-        if not df_filtered.empty:
-            
-            # 1. Trend Comparison
-            st.subheader("1. Methane Emission Trends (Shift in Dominance)")
-            fig1, ax1 = plt.subplots(figsize=(10, 5))
-            for s in df_filtered.columns:
-                ax1.plot(df_filtered.index, df_filtered[s], marker='o', markersize=3, label=s)
-            ax1.set_ylabel("Methane (MtCO2e)")
-            ax1.legend()
-            ax1.grid(True, alpha=0.3)
-            st.pyplot(fig1)
-            
-            # 2. Stacked Area
-            st.subheader("2. Composition of Methane Emissions")
-            fig2, ax2 = plt.subplots(figsize=(10, 5))
-            ax2.stackplot(df_filtered.index, df_filtered.T.values, labels=df_filtered.columns, alpha=0.8, cmap='tab20c')
-            ax2.set_ylabel("Methane (MtCO2e)")
-            ax2.legend(loc='upper left')
-            st.pyplot(fig2)
-            
-            col1, col2 = st.columns(2)
-            
-            # 3. Diverging Bar Chart
-            with col1:
-                st.subheader(f"3. Absolute Change ({start_year} vs {end_year})")
-                change = df_filtered.loc[end_year] - df_filtered.loc[start_year]
-                change = change.sort_values()
-                colors = ['#2ca02c' if x < 0 else '#d62728' for x in change.values]
-                
+                cols = ['green' if x < 0 else 'red' for x in change.values]
                 fig3, ax3 = plt.subplots(figsize=(6, 5))
-                ax3.barh(change.index, change.values, color=colors)
-                ax3.axvline(0, color='black', linewidth=1)
+                ax3.barh(change.index, change.values, color=cols)
+                ax3.axvline(0, color='black')
                 ax3.set_xlabel("Change in MtCO2e")
                 st.pyplot(fig3)
                 
-            # 4. Normalized Trends
+            # Vis 4: Heatmap
             with col2:
-                st.subheader("4. Rate of Reduction (1990 = 100)")
-                df_norm = df_filtered.div(df_filtered.iloc[0], axis=1) * 100
+                st.subheader("4. Fuel Intensity Heatmap")
                 fig4, ax4 = plt.subplots(figsize=(6, 5))
-                for s in df_norm.columns:
-                    ax4.plot(df_norm.index, df_norm[s], label=s)
-                ax4.axhline(100, color='black', linestyle='--')
-                ax4.set_ylabel("% of Start Year")
+                sns.heatmap(df_filtered.T, cmap="YlOrBr", ax=ax4, cbar=False)
                 st.pyplot(fig4)
-        else:
-            st.warning("Please select at least one sector.")
-
-# ==============================================================================
-# OPTION 5: TABLE 1.5 (NITROUS OXIDE N2O)
-# ==============================================================================
-elif selected_dataset == "Territorial emissions of nitrous oxide (N2O) by source category":
-    
-    df_n2o = load_data(file_path, '1.5')
-    
-    if df_n2o is not None:
-        df_ts = df_n2o.T
-        
-        # Filters
-        st.sidebar.subheader("Nitrous Oxide (N2O) Filters")
-        min_year, max_year = int(df_ts.index.min()), int(df_ts.index.max())
-        start_year, end_year = st.sidebar.slider("Year Range", min_year, max_year, (min_year, max_year))
-        
-        all_sectors = df_ts.columns.tolist()
-        top_5 = df_ts.loc[max_year].sort_values(ascending=False).head(5).index.tolist()
-        selected_sectors = st.sidebar.multiselect("Select Sectors", all_sectors, default=top_5)
-        
-        df_filtered = df_ts.loc[start_year:end_year, selected_sectors]
-        
-        st.header(f"Nitrous Oxide (N2O) Emissions Analysis ({start_year}-{end_year})")
-        
-        if not df_filtered.empty:
-            
-            # 1. Trend Line
-            st.subheader("1. N2O Emission Trends")
-            fig1, ax1 = plt.subplots(figsize=(10, 5))
-            for s in df_filtered.columns:
-                ax1.plot(df_filtered.index, df_filtered[s], marker='o', markersize=3, label=s)
-            ax1.set_ylabel("N2O (MtCO2e)")
-            ax1.legend()
-            ax1.grid(True, alpha=0.3)
-            st.pyplot(fig1)
-            
-            col1, col2 = st.columns(2)
-            
-            # 2. Snapshot Bar
-            with col1:
-                st.subheader(f"2. Top N2O Emitters in {end_year}")
-                snapshot = df_filtered.loc[end_year].sort_values()
-                fig2, ax2 = plt.subplots(figsize=(6, 5))
-                ax2.barh(snapshot.index, snapshot.values, color='#9467bd')
-                ax2.set_xlabel("MtCO2e")
-                st.pyplot(fig2)
                 
-            # 3. Donut Chart (Share)
-            with col2:
-                st.subheader(f"3. Sector Share in {end_year}")
-                fig3, ax3 = plt.subplots(figsize=(6, 5))
-                sizes = df_filtered.loc[end_year]
-                # Handle zeroes/negatives for pie chart safety
-                sizes = sizes[sizes > 0] 
-                if not sizes.empty:
-                    ax3.pie(sizes, labels=sizes.index, autopct='%1.1f%%', startangle=140, pctdistance=0.85)
-                    ax3.add_artist(plt.Circle((0,0),0.70,fc='white'))
-                    st.pyplot(fig3)
-                else:
-                    st.info("No positive emissions to display in pie chart.")
+            # --- CLASSIFICATION SECTION (REPLACED) ---
+            st.markdown("---")
+            st.header("Supervised Learning: Fuel Trend Classification")
+            st.info("Classifies ALL fuel types as 'Increasing', 'Decreasing', or 'Stable' based on their historical trajectory.")
             
-            # 4. Heatmap
-            st.subheader("4. N2O Intensity Heatmap")
-            fig4, ax4 = plt.subplots(figsize=(12, 6))
-            sns.heatmap(df_filtered.T, cmap="Purples", linewidths=.5, ax=ax4, cbar_kws={'label': 'MtCO2e'})
-            ax4.set_xlabel("Year")
-            ax4.set_ylabel("Sector")
-            st.pyplot(fig4)
-            
+            rf_model = load_rf_model()
+            if rf_model:
+                # 1. USE ALL DATA (Ignore selection) to show full landscape
+                df_all = df_ts.loc[start_year:end_year, :]
+                
+                # 2. Calculate Features
+                feats = pd.DataFrame(index=df_all.columns)
+                feats['Mean_Emissions'] = df_all.mean(axis=0)
+                feats['Volatility'] = df_all.std(axis=0)
+                feats['Max_Emissions'] = df_all.max(axis=0)
+                
+                # 3. Predict
+                feats['Predicted Trend'] = rf_model.predict(feats)
+                
+                # 4. VIZ 1: Trend Distribution (Bar Chart)
+                col_c1, col_c2 = st.columns(2)
+                
+                with col_c1:
+                    st.subheader("Overview: How many fuels are Increasing?")
+                    trend_counts = feats['Predicted Trend'].value_counts()
+                    fig_bar, ax_bar = plt.subplots(figsize=(6, 4))
+                    colors = {'Decreasing': 'green', 'Increasing': 'red', 'Stable': 'gray'}
+                    trend_counts.plot(kind='bar', color=[colors.get(x, 'blue') for x in trend_counts.index], ax=ax_bar)
+                    ax_bar.set_ylabel("Count of Fuel Types")
+                    st.pyplot(fig_bar)
+                    
+                # 5. VIZ 2: Watchlist Table
+                with col_c2:
+                    st.subheader("⚠️ Rising Emissions Watchlist")
+                    rising_fuels = feats[feats['Predicted Trend'] == 'Increasing'].sort_values('Mean_Emissions', ascending=False)
+                    if not rising_fuels.empty:
+                        st.dataframe(rising_fuels[['Predicted Trend', 'Mean_Emissions']].style.format("{:.2f}"))
+                    else:
+                        st.success("Good news! No fuels are currently classified as 'Increasing' in this period.")
+                        
+                # 6. VIZ 3: Feature Importance (Keep as it helps explain model)
+                st.subheader("What drives the classification?")
+                importances = pd.Series(rf_model.feature_importances_, index=['Mean', 'Volatility', 'Max'])
+                fig_imp, ax_imp = plt.subplots(figsize=(8, 3))
+                importances.sort_values().plot(kind='barh', color='teal', ax=ax_imp)
+                ax_imp.set_title("Feature Importance (Random Forest)")
+                st.pyplot(fig_imp)
+
+            else:
+                st.warning("Classification Model not found. Run training notebook first.")
+                
         else:
-            st.warning("Please select at least one sector.")
+            st.warning("Select at least one fuel type.")
