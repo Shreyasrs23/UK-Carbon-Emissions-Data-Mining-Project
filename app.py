@@ -93,6 +93,145 @@ def load_data(file_path, sheet_name):
             else:
                 st.error(f"Column 'TES sector' not found in {sheet_name}")
                 return None
+
+        # --- LOGIC FOR TABLE 3.2 ---
+        elif sheet_name == '3.2':
+            # 1. Robust Load
+            df_raw = pd.read_excel(file_path, sheet_name='3.2', header=None, nrows=20)
+            header_idx = None
+            for i, row in df_raw.iterrows():
+                if row.astype(str).str.contains('TES sector', case=False).any():
+                    header_idx = i
+                    break
+            if header_idx is None: header_idx = 5 # Fallback
+
+            df = pd.read_excel(file_path, sheet_name='3.2', header=header_idx)
+
+            # 2. Cleaning
+            df.columns = [str(c).strip() for c in df.columns]
+            # Filter for Main Sectors (ends in ' total', exclude Grand total)
+            if 'TES sector' in df.columns:
+                mask = (df['TES sector'].str.endswith(' total', na=False)) & (df['TES sector'] != 'Grand total')
+                df = df[mask].copy()
+                df['TES sector'] = df['TES sector'].str.replace(' total', '')
+                df.set_index('TES sector', inplace=True)
+
+            # Keep Years
+            year_cols = [c for c in df.columns if str(c).replace('.', '').isdigit()]
+            df_ts = df[year_cols].apply(pd.to_numeric, errors='coerce')
+            return df_ts
+
+        # --- LOGIC FOR TABLE 3.3 (SCOPES) ---
+        elif sheet_name == '3.3':
+            # 1. Robust Load
+            df_raw = pd.read_excel(file_path, sheet_name='3.3', header=None, nrows=20)
+            header_idx = None
+            for i, row in df_raw.iterrows():
+                if row.astype(str).str.contains('Geographic coverage', case=False).any():
+                    header_idx = i
+                    break
+            if header_idx is None: header_idx = 4 # Fallback
+
+            df = pd.read_excel(file_path, sheet_name='3.3', header=header_idx)
+
+            # 2. Cleaning
+            df.columns = [str(c).strip() for c in df.columns]
+            df.set_index('Geographic coverage', inplace=True)
+            year_cols = [c for c in df.columns if str(c).replace('.', '').isdigit()]
+            df_ts = df[year_cols].apply(pd.to_numeric, errors='coerce')
+            return df_ts
+
+        # --- LOGIC FOR TABLE 3.4 (FUEL EMISSIONS) ---
+        elif sheet_name == '3.4':
+            # 1. Robust Load
+            df_raw = pd.read_excel(file_path, sheet_name='3.4', header=None, nrows=20)
+            header_idx = None
+            for i, row in df_raw.iterrows():
+                if row.astype(str).str.contains('Fuel group', case=False).any():
+                    header_idx = i
+                    break
+            if header_idx is None: header_idx = 4 # Fallback
+
+            df = pd.read_excel(file_path, sheet_name='3.4', header=header_idx)
+
+            # 2. Cleaning
+            df.columns = [str(c).strip() for c in df.columns]
+            
+            # Group by Fuel Group
+            year_cols = [c for c in df.columns if str(c).replace('.', '').isdigit()]
+            # Ensure numeric conversion for summation
+            df[year_cols] = df[year_cols].apply(pd.to_numeric, errors='coerce')
+            
+            df_agg = df.groupby('Fuel group')[year_cols].sum()
+            if 'Grand total' in df_agg.index: df_agg = df_agg.drop('Grand total')
+            
+            return df_agg
+
+        # --- LOGIC FOR TABLE 4.1 (UNCERTAINTY BY GAS) ---
+        elif sheet_name == '4.1':
+            df = pd.read_excel(file_path, sheet_name='4.1', header=10) # Usually around row 10/11 for uncertainty tables
+
+            # Clean Columns
+            df.columns = [str(c).strip() for c in df.columns]
+            # We need "Pollutant", "2023 emissions", and the uncertainty bounds
+            # Note: Column names in uncertainty tables are often messy/multiline. 
+            # We'll rename columns by index for safety.
+            # Assuming Col 0=Gas, Col 4=2023 Value, Col 5=Uncertainty %
+            df = df.iloc[:, [0, 4, 5]] 
+            df.columns = ['Gas', 'Emissions_2023', 'Uncertainty_Pct']
+
+            df = df.dropna()
+            df['Emissions_2023'] = pd.to_numeric(df['Emissions_2023'], errors='coerce')
+            # Uncertainty is usually +/- %
+            df['Uncertainty_Pct'] = pd.to_numeric(df['Uncertainty_Pct'], errors='coerce')
+            df['Error_Abs'] = df['Emissions_2023'] * (df['Uncertainty_Pct'] / 100) * 1.96 # Approx 95% CI
+            return df
+
+        # --- LOGIC FOR TABLE 4.2 (UNCERTAINTY BY SECTOR) ---
+        elif sheet_name == '4.2':
+            df = pd.read_excel(file_path, sheet_name='4.2', header=8) 
+
+            # Cleaning
+            df.columns = [str(c).strip() for c in df.columns]
+            # Locate key columns: Sector, 2023 Value, Uncertainty %
+            # Usually cols 0, 2, 3 based on inspection
+            df_plot = df.iloc[:, [0, 2, 3]].copy()
+            df_plot.columns = ['Sector', 'Emissions', 'Uncertainty_Pct']
+            df_plot = df_plot.dropna()
+
+            # Calculate Absolute Error Bar
+            df_plot['Emissions'] = pd.to_numeric(df_plot['Emissions'], errors='coerce')
+            df_plot['Uncertainty_Pct'] = pd.to_numeric(df_plot['Uncertainty_Pct'], errors='coerce')
+            df_plot['Error'] = df_plot['Emissions'] * (df_plot['Uncertainty_Pct'] / 100) * 1.96
+            return df_plot
+
+        # --- LOGIC FOR TABLE 5.1 (AVIATION & SHIPPING) ---
+        elif sheet_name == '5.1':
+            df = pd.read_excel(file_path, sheet_name='5.1', header=6)
+            df.columns = [str(c).strip() for c in df.columns]
+            
+            if 'Memo item' in df.columns:
+                df = df[df['Memo item'].isin(['International aviation', 'International shipping'])].copy()
+                df.set_index('Memo item', inplace=True)
+                year_cols = [c for c in df.columns if str(c).replace('.', '').isdigit()]
+                df_ts = df[year_cols].apply(pd.to_numeric, errors='coerce')
+                return df_ts
+            else:
+                 return None
+
+        # --- LOGIC FOR REFERENCE TABLES (6.1, 6.3) ---
+        elif sheet_name == '6.1':
+            df = pd.read_excel(file_path, sheet_name='6.1', header=4)
+            return df
+        elif sheet_name == '6.3':
+            df = pd.read_excel(file_path, sheet_name='6.3', header=3)
+            return df
+
+        # --- NEW LOGIC FOR TABLE 6.4 (GWPs) ---
+        elif sheet_name == '6.4':
+            df = pd.read_excel(file_path, sheet_name='6.4', header=5)
+            df.columns = [str(c).strip() for c in df.columns]
+            return df
                 
         return df
 
@@ -134,7 +273,14 @@ dataset_options = [
     "Territorial emissions of methane (CH4) by source category",
     "Territorial emissions of nitrous oxide (N2O) by source category",
     "Territorial emissions of fluorinated gases (F gases) by source category",
-    "Territorial greenhouse gas emissions by type of fuel"
+    "Territorial greenhouse gas emissions by type of fuel",
+    "Emissions by Source Category",
+    "Reporting Scopes (UNFCCC vs Paris Agreement)",
+    "Emissions by Fuel",
+    "Uncertainty by Gas",
+    "Uncertainty by Sector",
+    "Reference Tables and Appendix Data",
+    "Global Warming Potentials (GWPs)"
 ]
 selected_dataset = st.sidebar.selectbox("Select Dataset to Analyze", dataset_options)
 
@@ -584,3 +730,156 @@ elif selected_dataset == "Territorial greenhouse gas emissions by type of fuel":
                 
         else:
             st.warning("Select at least one fuel type.")
+
+# ==============================================================================
+# OPTION 8: TABLE 3.2 (NEW REQUEST)
+# ==============================================================================
+elif selected_dataset == "Emissions by Source Category":
+    
+    # 1. Load using the logic added to load_data for '3.2'
+    df_ts = load_data(file_path, '3.2')
+    
+    if df_ts is not None:
+        # 3. Visualizations
+        # A. Trends
+        st.subheader("Table 3.2: Sector Trends (UK + Crown Dependencies + Overseas Territories)")
+        fig1, ax1 = plt.subplots(figsize=(12, 6))
+        for sector in df_ts.index:
+            ax1.plot(df_ts.columns, df_ts.loc[sector], marker='o', markersize=3, label=sector)
+        ax1.set_ylabel('Emissions (MtCO2e)')
+        ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        ax1.grid(True, alpha=0.3)
+        st.pyplot(fig1)
+
+        # B. Composition
+        st.subheader("Table 3.2: Aggregate Emissions Composition")
+        fig2, ax2 = plt.subplots(figsize=(12, 6))
+        ax2.stackplot(df_ts.columns, df_ts.values, labels=df_ts.index, alpha=0.8)
+        ax2.set_ylabel('Emissions (MtCO2e)')
+        ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        st.pyplot(fig2)
+
+# ==============================================================================
+# OPTION 9: TABLE 3.3 (SCOPES REPORTING)
+# ==============================================================================
+elif selected_dataset == "Reporting Scopes (UNFCCC vs Paris Agreement)":
+    
+    df_ts = load_data(file_path, '3.3')
+    
+    if df_ts is not None:
+        st.subheader("Table 3.3: Comparison of Reporting Scopes (UNFCCC vs Paris)")
+        
+        # Plotting
+        fig, ax = plt.subplots(figsize=(12, 6))
+        for idx in df_ts.index:
+            # Filter based on common totals in Table 3.3
+            if 'Total' in str(idx) or 'United Kingdom' in str(idx): 
+                ax.plot(df_ts.columns, df_ts.loc[idx], label=idx, linewidth=2, marker='o')
+
+        ax.set_ylabel('Emissions (MtCO2e)')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        st.pyplot(fig)
+
+# ==============================================================================
+# OPTION 10: TABLE 3.4 (FUEL EMISSIONS)
+# ==============================================================================
+elif selected_dataset == "Emissions by Fuel":
+    
+    df_agg = load_data(file_path, '3.4')
+    
+    if df_agg is not None:
+        st.subheader("Table 3.4: Fuel Emissions (UK + Territories)")
+        
+        fig, ax = plt.subplots(figsize=(12, 6))
+        for fuel in df_agg.index:
+            lw = 3 if any(x in fuel for x in ['Coal', 'Gas', 'Petroleum']) else 1
+            ax.plot(df_agg.columns, df_agg.loc[fuel], label=fuel, linewidth=lw)
+
+        ax.set_ylabel('Emissions (MtCO2e)')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        st.pyplot(fig)
+
+# ==============================================================================
+# OPTION 11: TABLE 4.1 (UNCERTAINTY)
+# ==============================================================================
+elif selected_dataset == "Uncertainty by Gas":
+    
+    df_unc = load_data(file_path, '4.1')
+    
+    if df_unc is not None:
+        st.subheader("Table 4.1: 2023 Emissions with Uncertainty Bounds (95% CI)")
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.errorbar(df_unc['Gas'], df_unc['Emissions_2023'], yerr=df_unc['Error_Abs'], fmt='o', capsize=5, color='red')
+        ax.bar(df_unc['Gas'], df_unc['Emissions_2023'], alpha=0.3, color='gray')
+        ax.set_ylabel('Emissions (MtCO2e)')
+        ax.grid(axis='y', alpha=0.3)
+        st.pyplot(fig)
+
+# ==============================================================================
+# OPTION 12: TABLE 4.2 (UNCERTAINTY BY SECTOR)
+# ==============================================================================
+elif selected_dataset == "Uncertainty by Sector":
+    
+    df_plot = load_data(file_path, '4.2')
+    
+    if df_plot is not None:
+        st.subheader("Table 4.2: Sector Emissions Uncertainty (2023)")
+        
+        fig, ax = plt.subplots(figsize=(12, 6))
+        # Sort by Emissions size
+        df_plot = df_plot.sort_values('Emissions', ascending=False)
+        ax.bar(df_plot['Sector'], df_plot['Emissions'], alpha=0.5, color='teal', label='Reported Value')
+        ax.errorbar(df_plot['Sector'], df_plot['Emissions'], yerr=df_plot['Error'], fmt='none', ecolor='red', capsize=5, label='Uncertainty Range')
+
+        ax.set_xticklabels(df_plot['Sector'], rotation=45, ha='right')
+        ax.set_ylabel('Emissions (MtCO2e)')
+        ax.legend()
+        st.pyplot(fig)
+
+
+# ==============================================================================
+# OPTION 14: REFERENCE TABLES
+# ==============================================================================
+elif selected_dataset == "Reference Tables and Appendix Data":
+    
+    st.header("Reference Tables and Appendix Data")
+    st.markdown("These tables define categories and definitions used throughout the dataset.")
+
+    st.subheader("Table 6.1: Sector Definitions")
+    df_61 = load_data(file_path, '6.1')
+    if df_61 is not None:
+        st.dataframe(df_61)
+
+    st.subheader("Table 6.3: Fuel Categories")
+    df_63 = load_data(file_path, '6.3')
+    if df_63 is not None:
+        st.dataframe(df_63)
+
+# ==============================================================================
+# OPTION 15: TABLE 6.4 (GWPs)
+# ==============================================================================
+elif selected_dataset == "Global Warming Potentials (GWPs)":
+    
+    df_gwp = load_data(file_path, '6.4')
+    
+    if df_gwp is not None:
+        st.subheader("Table 6.4: Global Warming Potential (100-Year Horizon) - Log Scale")
+        
+        # Clean columns if needed (already done in load_data but safe to check)
+        # Filter for main gases for a clean plot
+        main_gases = ['Carbon dioxide', 'Methane', 'Nitrous oxide', 'HFC-134a', 'Sulphur hexafluoride']
+        
+        if 'Greenhouse gas' in df_gwp.columns and '100 years GWP' in df_gwp.columns:
+            df_plot = df_gwp[df_gwp['Greenhouse gas'].isin(main_gases)].copy()
+            df_plot.set_index('Greenhouse gas', inplace=True)
+
+            fig, ax = plt.subplots(figsize=(10, 6))
+            sns.barplot(x=df_plot.index, y=df_plot['100 years GWP'], palette='Reds', ax=ax)
+            ax.set_yscale('log') # Log scale is essential here because SF6 is ~23,000 while CO2 is 1
+            ax.set_ylabel('GWP (CO2 = 1)')
+            st.pyplot(fig)
+        else:
+            st.error("Required columns 'Greenhouse gas' or '100 years GWP' not found in Table 6.4.")
